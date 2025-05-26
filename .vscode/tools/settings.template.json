@@ -1,0 +1,84 @@
+{
+    "files.exclude": {
+        "**/.mypy_cache": true,
+        "**/__pycache__": true,
+        "**/*.egg-info": true
+    },
+    "files.associations": {
+        "*.tpp": "cpp",
+        "*.kit": "toml",
+        "*.rst": "restructuredtext"
+    },
+    "editor.rulers": [
+        120
+    ],
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/node_modules/**": true,
+        "**/_isaac_sim/**": true,
+        "**/_compiler/**": true
+    },
+    "spellright.language": [
+        "en-US-10-1."
+    ],
+    "spellright.documentTypes": [
+        "markdown",
+        "latex",
+        "plaintext",
+        "cpp",
+        "asciidoc",
+        "python",
+        "restructuredtext"
+    ],
+    "cSpell.words": [
+        "literalinclude",
+        "linenos",
+        "instanceable",
+        "isaacSim",
+        "jacobians",
+        "pointcloud",
+        "ridgeback",
+        "rllib",
+        "robomimic",
+        "teleoperation",
+        "xform",
+        "numpy",
+        "tensordict",
+        "flatcache",
+        "physx",
+        "dpad",
+        "gamepad",
+        "linspace",
+        "upsampled",
+        "downsampled",
+        "arange",
+        "discretization",
+        "trimesh",
+        "uninstanceable"
+    ],
+    "python.languageServer": "Pylance",
+    "python.formatting.provider": "black",
+    "python.formatting.blackArgs": ["--line-length", "120"],
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
+    "python.linting.flake8Args": [
+        "--max-line-length=120"
+    ],
+    "autoDocstring.docstringFormat": "google",
+    "autoDocstring.guessTypes": true,
+    "python.defaultInterpreterPath": "",
+    "[python]": {
+        "editor.tabSize": 4
+    },
+    "[restructuredtext]": {
+        "editor.tabSize": 2
+    },
+    "python.analysis.extraPaths": [
+        "/home/IsaacLab/source/isaaclab_tasks",
+        "/home/IsaacLab/source/isaaclab_assets",
+        "/home/IsaacLab/source/isaaclab_mimic",
+        "/home/IsaacLab/source/isaaclab_rl",
+        "/home/IsaacLab/source/isaaclab"
+    ]
+}

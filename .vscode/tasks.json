@@ -1,0 +1,20 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Setup VSCode",
+            "detail": "Setup VSCode Settings",
+            "type": "shell",
+            "command": "python3 ${workspaceFolder}/.vscode/tools/setup_vscode.py ${input:path}",
+        },
+    ],
+    "inputs": [
+        {
+            "id": "path",
+            "type": "promptString",
+            "description": "Path to IsaacLab"
+        }
+    ]
+}
