@@ -4,6 +4,12 @@
 **/*.so
 **/*.log*
 
+
+# ROS
+**/build*/
+**/install*/
+**/log*/
+
 # Omniverse
 **/*.dmp
 **/.thumbs
