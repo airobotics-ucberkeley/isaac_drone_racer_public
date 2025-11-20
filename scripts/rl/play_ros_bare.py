@@ -42,7 +42,6 @@ parser.add_argument(
     help="Renderer to use.",
 )
 parser.add_argument("--log", type=int, default=None, help="Log the observations and metrics.")
-parser.add_argument("--rc-timeout", type=float, default=0.25, help="RC command watchdog timeout (seconds).")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -70,19 +69,17 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
-
-from std_msgs.msg import Float32MultiArray, Header
-from geometry_msgs.msg import PoseStamped, TwistStamped, Vector3Stamped
-from autonomy_msgs.msg import DroneState #######TODO
-from mavros_msgs.msg import RCOverride #######TODO
+from std_msgs.msg import Float32MultiArray
+from geometry_msgs.msg import Pose, Twist, Vector3
 
 # ==================== OBSERVATION LAYOUT (edit to match your task) ====================
+# Whiteboard flow: a 16-len tensor from env -> ROS
 # Default mapping assumes:
 #   0:4   -> quaternion [w,x,y,z]
 #   4:7   -> position [px,py,pz]
 #   7:10  -> linear velocity [vx,vy,vz]
 #   10:13 -> angular velocity [wx,wy,wz]
-#   13:16 -> body-frame goal delta [dx_b,dy_b,dz_b]
+#   13:16 -> body-frame goal delta [dx_b,dy_b,dz_b]  (or your last 3 entries)
 OBS_MAP = {
     "quat":  (0, 4),
     "pos":   (4, 7),
@@ -127,60 +124,32 @@ def rc_to_actions(rc_vec, A=A_DEFAULT, rc_gains=RC_GAINS,
     motors = np.clip(motors, a_min, a_max)
     return motors
 
-# -------------------- Ephemeral RC buffer with timeout --------------------
+# -------------------- Simple buffer for latest RC command --------------------
 class RCBuffer:
-    """
-    Consume-once RC commands with watchdog timeout.
-    - Each received RC msg is applied for ONE step only, then cleared.
-    - If no RC arrives for 'timeout_sec', it auto-clears to neutral zeros.
-    """
-    def __init__(self, timeout_sec: float = 0.25):
+    def __init__(self):
         self._rc = np.zeros(4, dtype=np.float32)
         self._has_cmd = False
-        self._last_t = 0.0
-        self._timeout = timeout_sec
 
     def update(self, arr):
         if arr is None or len(arr) < 4:
             return
-        self._rc[:] = np.array(arr[:4], dtype=np.float32)
+        self._rc = np.array(arr[:4], dtype=np.float32)
         self._has_cmd = True
-        self._last_t = time.monotonic()
 
-    def get(self, consume: bool = True):
-        """
-        Returns (rc_vec, has_cmd).
-        If 'consume' is True, the command is cleared immediately after being read (one-shot).
-        If timed out, returns neutral zeros and has_cmd=False.
-        """
-        now = time.monotonic()
-        if not self._has_cmd or (now - self._last_t) > self._timeout:
-            self._has_cmd = False
-            self._rc[:] = 0.0
-            return self._rc.copy(), False
+    def get(self):
+        return self._rc.copy(), self._has_cmd
 
-        out = self._rc.copy()
-        if consume:
-            self._has_cmd = False
-            self._rc[:] = 0.0
-        return out, True
-
-# -------------------- ROS 2 node: state publishers (with headers) + RC subscriber --------------------
+# -------------------- ROS 2 node that bridges state pub + RC sub --------------------
 class IsaacRosBridge(Node):
-    def __init__(self, rc_buffer: RCBuffer, frame_map="map", frame_base="base_link"):
+    def __init__(self, rc_buffer: RCBuffer):
         super().__init__("isaac_ros_bridge")
         self.rc_buffer = rc_buffer
-        self.frame_map = frame_map
-        self.frame_base = frame_base
 
-        # State publishers (all with headers)
-        self.state_pose_pub  = self.create_publisher(PoseStamped,   "/drone/state/pose",      10)
-        self.state_twist_pub = self.create_publisher(TwistStamped,  "/drone/state/twist",     10)
-        self.state_goal_pub  = self.create_publisher(Vector3Stamped, "/drone/state/goal_b",   10)
-
-        # Raw obs: publish a Header + Float32MultiArray with the SAME timestamp each step
-        self.state_raw_header_pub = self.create_publisher(Header,            "/drone/state/raw_header", 10)
-        self.state_raw_pub        = self.create_publisher(Float32MultiArray, "/drone/state/raw",        10)
+        # State publishers
+        self.state_pose_pub = self.create_publisher(Pose, "/drone/state/pose", 10)
+        self.state_twist_pub = self.create_publisher(Twist, "/drone/state/twist", 10)
+        self.state_goal_pub  = self.create_publisher(Vector3, "/drone/state/goal_b", 10)
+        self.state_raw_pub   = self.create_publisher(Float32MultiArray, "/drone/state/raw", 10)
 
         # RC override subscriber (Float32MultiArray: [roll, pitch, thrust, yaw_rate])
         self.rc_sub = self.create_subscription(
@@ -191,57 +160,32 @@ class IsaacRosBridge(Node):
         self.rc_buffer.update(msg.data)
 
     def publish_state(self, obs_np: np.ndarray):
-        """
-        Publish:
-        - PoseStamped (frame_id=map)
-        - TwistStamped (frame_id=base_link)
-        - Vector3Stamped goal_b (frame_id=base_link)
-        - Header + raw Float32MultiArray pair for the 16-dim vector
-        All share the same timestamp within a step.
-        """
-        stamp = self.get_clock().now().to_msg()
+        # Raw obs (len=16)
+        self.state_raw_pub.publish(Float32MultiArray(data=obs_np.astype(np.float32).tolist()))
 
-        # Raw header + array
-        hdr = Header()
-        hdr.stamp = stamp
-        hdr.frame_id = self.frame_base  # raw body-frame data pairing
-        self.state_raw_header_pub.publish(hdr)
-
-        raw = Float32MultiArray(data=obs_np.astype(np.float32).tolist())
-        self.state_raw_pub.publish(raw)
-
-        # Slices
+        # Structured messages
         s, e = OBS_MAP["quat"];   quat = obs_np[s:e]
         s, e = OBS_MAP["pos"];    pos  = obs_np[s:e]
         s, e = OBS_MAP["lin_v"];  linv = obs_np[s:e]
         s, e = OBS_MAP["ang_v"];  angv = obs_np[s:e]
         s, e = OBS_MAP["goal_b"]; goal = obs_np[s:e]
 
-        # PoseStamped in map frame
-        pose = PoseStamped()
-        pose.header.stamp = stamp
-        pose.header.frame_id = self.frame_map
-        pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = float(pos[0]), float(pos[1]), float(pos[2])
+        pose = Pose()
+        pose.position.x, pose.position.y, pose.position.z = float(pos[0]), float(pos[1]), float(pos[2])
         # expecting [w,x,y,z]
-        pose.pose.orientation.w = float(quat[0])
-        pose.pose.orientation.x = float(quat[1])
-        pose.pose.orientation.y = float(quat[2])
-        pose.pose.orientation.z = float(quat[3])
+        pose.orientation.w = float(quat[0])
+        pose.orientation.x = float(quat[1])
+        pose.orientation.y = float(quat[2])
+        pose.orientation.z = float(quat[3])
         self.state_pose_pub.publish(pose)
 
-        # TwistStamped in base frame
-        twist = TwistStamped()
-        twist.header.stamp = stamp
-        twist.header.frame_id = self.frame_base
-        twist.twist.linear.x, twist.twist.linear.y, twist.twist.linear.z = float(linv[0]), float(linv[1]), float(linv[2])
-        twist.twist.angular.x, twist.twist.angular.y, twist.twist.angular.z = float(angv[0]), float(angv[1]), float(angv[2])
+        twist = Twist()
+        twist.linear.x, twist.linear.y, twist.linear.z = float(linv[0]), float(linv[1]), float(linv[2])
+        twist.angular.x, twist.angular.y, twist.angular.z = float(angv[0]), float(angv[1]), float(angv[2])
         self.state_twist_pub.publish(twist)
 
-        # Vector3Stamped goal_b in base frame
-        goal_b = Vector3Stamped()
-        goal_b.header.stamp = stamp
-        goal_b.header.frame_id = self.frame_base
-        goal_b.vector.x, goal_b.vector.y, goal_b.vector.z = float(goal[0]), float(goal[1]), float(goal[2])
+        goal_b = Vector3()
+        goal_b.x, goal_b.y, goal_b.z = float(goal[0]), float(goal[1]), float(goal[2])
         self.state_goal_pub.publish(goal_b)
 
 # ----------------------------------------------------------------------
@@ -279,7 +223,7 @@ algorithm = args_cli.algorithm.lower()
 
 
 def main():
-    """Play with skrl agent, ROS 2 state pubs (with timestamps) + ephemeral RC override actions."""
+    """Play with skrl agent, bridged to ROS 2 for state pub + RC override actions."""
     # configure the ML framework into the global skrl variable
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"
@@ -346,6 +290,7 @@ def main():
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)  # same as: `wrap_env(env, wrapper="auto")`
 
     # configure and instantiate the skrl runner
+    # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
     experiment_cfg["trainer"]["close_environment_at_exit"] = False
     experiment_cfg["agent"]["experiment"]["write_interval"] = 0  # don't log to TensorBoard
     experiment_cfg["agent"]["experiment"]["checkpoint_interval"] = 0  # don't generate checkpoints
@@ -358,7 +303,7 @@ def main():
 
     # -------------------- ROS 2 init + bridge --------------------
     rclpy.init(args=None)
-    rc_buffer = RCBuffer(timeout_sec=args_cli.rc_timeout)
+    rc_buffer = RCBuffer()
     ros_node = IsaacRosBridge(rc_buffer)
     executor = SingleThreadedExecutor()
     executor.add_node(ros_node)
@@ -375,33 +320,44 @@ def main():
         # Allow ROS callbacks (RC updates) to run
         executor.spin_once(timeout_sec=0.0)
 
-        # --- Publish state to ROS with timestamps ---
+        # --- Publish state to ROS ---
         # Convert obs to a flat numpy vector (len=16) for publishing
         if isinstance(obs, dict):
+            # multi-agent dict -> take first agent's obs for publishing (adjust as needed)
             first_key = next(iter(obs))
             obs_tensor = obs[first_key]
         else:
             obs_tensor = obs
 
+        # Ensure we have a 1D tensor (B=1) -> (16,)
         obs_np = obs_tensor.detach().cpu().numpy().reshape(-1)
+        # Safety: only publish the first 16 entries even if wrapper adds extras
         if obs_np.shape[0] < 16:
+            # pad if needed (unlikely in your setup)
             obs_np = np.pad(obs_np, (0, 16 - obs_np.shape[0]), mode="constant")
         else:
             obs_np = obs_np[:16]
         ros_node.publish_state(obs_np)
 
-        # --- Build actions (no action unless RC present) ---
-        rc_vec, has_cmd = rc_buffer.get(consume=True)  # [roll, pitch, thrust, yaw_rate]
+        # --- Build actions ---
+        # Prefer RC override if any command has been received; otherwise use RL policy mean action
+        rc_vec, has_cmd = rc_buffer.get()  # [roll, pitch, thrust, yaw_rate]
         if has_cmd:
-            actions_np = rc_to_actions(rc_vec)
+            actions_np = rc_to_actions(rc_vec)  # [FR, RL, FL, RR]
+            # shape to (num_envs, action_dim); here assume single env
+            action_tensor = torch.from_numpy(actions_np).to(obs_tensor.device).unsqueeze(0)  # (1,4)
+            actions = action_tensor
+            if hasattr(env, "possible_agents"):
+                # broadcast same RC action to all agents if MARL
+                actions = {a: action_tensor for a in env.possible_agents}
         else:
-            actions_np = np.zeros(4, dtype=np.float32)  # neutral/hover in your env
-
-        # Prepare actions in the structure env expects
-        action_tensor = torch.from_numpy(actions_np).to(obs_tensor.device).unsqueeze(0)  # (1,4)
-        actions = action_tensor
-        if hasattr(env, "possible_agents"):
-            actions = {a: action_tensor for a in env.possible_agents}
+            # Fallback to policy action (deterministic mean)
+            with torch.inference_mode():
+                outputs = runner.agent.act(obs, timestep=0, timesteps=0)
+                if hasattr(env, "possible_agents"):
+                    actions = {a: outputs[-1][a].get("mean_actions", outputs[0][a]) for a in env.possible_agents}
+                else:
+                    actions = outputs[-1].get("mean_actions", outputs[0])
 
         # --- Step env ---
         with torch.inference_mode():
@@ -409,6 +365,7 @@ def main():
 
         if args_cli.video:
             timestep += 1
+            # exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
 
@@ -418,6 +375,7 @@ def main():
             time.sleep(sleep_time)
 
         if args_cli.log:
+            # Handle bool or vectorized done flags
             term = (terminated is True) or (hasattr(terminated, "any") and terminated.any())
             trunc = (truncated is True) or (hasattr(truncated, "any") and truncated.any())
             if term or trunc:
