@@ -10,6 +10,7 @@ import argparse
 
 from isaaclab.app import AppLauncher
 
+
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
@@ -20,6 +21,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
+parser.add_argument("--save_cam", action = "store_true", default = False, help = "Save drone pov camera data")
 parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
@@ -71,6 +73,11 @@ from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Float32MultiArray
 from geometry_msgs.msg import Pose, Twist, Vector3
+from sensor_msgs.msg import Image as Ros_Image
+from PIL import Image as PIL_Image
+from cv_bridge import CvBridge # Import the key library
+# Initialize the CvBridge object
+bridge = CvBridge()
 
 # ==================== OBSERVATION LAYOUT (edit to match your task) ====================
 # Whiteboard flow: a 16-len tensor from env -> ROS
@@ -150,6 +157,7 @@ class IsaacRosBridge(Node):
         self.state_twist_pub = self.create_publisher(Twist, "/drone/state/twist", 10)
         self.state_goal_pub  = self.create_publisher(Vector3, "/drone/state/goal_b", 10)
         self.state_raw_pub   = self.create_publisher(Float32MultiArray, "/drone/state/raw", 10)
+        self.image_pub = self.create_publisher(Ros_Image, "/camera/image_raw", 1)
 
         # RC override subscriber (Float32MultiArray: [roll, pitch, thrust, yaw_rate])
         self.rc_sub = self.create_subscription(
@@ -158,6 +166,21 @@ class IsaacRosBridge(Node):
 
     def _on_rc(self, msg: Float32MultiArray):
         self.rc_buffer.update(msg.data)
+
+    def publish_cam(self, img: np.ndarray, frame_id: int):
+        img_uint8 = img.astype(np.uint8) 
+    
+        # Convert NumPy array to ROS Image message
+        #    'rgb8' specifies 8-bit R, G, B channels
+        try:
+            ros_image_msg = bridge.cv2_to_imgmsg(img_uint8, encoding="rgb8")
+        except Exception as e:
+            return
+
+        ros_image_msg.header.frame_id = str(frame_id) # desired frame
+        
+        # 4. Publish the message
+        self.image_pub.publish(ros_image_msg)
 
     def publish_state(self, obs_np: np.ndarray):
         # Raw obs (len=16)
@@ -205,6 +228,7 @@ elif args_cli.ml_framework.startswith("jax"):
     from skrl.utils.runner.jax import Runner
 
 import isaaclab_tasks  # noqa: F401
+
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
@@ -257,7 +281,7 @@ def main():
             log_root_path, run_dir=f".*_{algorithm}_{args_cli.ml_framework}", other_dirs=["checkpoints"]
         )
     log_dir = os.path.dirname(os.path.dirname(resume_path))
-
+    
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -313,7 +337,13 @@ def main():
     timestep = 0
     num_episode = 0
 
+    # saving camera_output locally
+    camera_out_dir = f"camerapov/{args_cli.task}"
+    if args_cli.save_cam:
+        os.makedirs(camera_out_dir, exist_ok = True)
+
     # simulate environment
+    frame_count = 0
     while simulation_app.is_running():
         start_time = time.time()
 
@@ -362,6 +392,16 @@ def main():
         # --- Step env ---
         with torch.inference_mode():
             obs, rew, terminated, truncated, info = env.step(actions)
+
+        camera_data = env.scene["tiled_camera"].data.output["rgb"].detach().cpu().numpy().squeeze()
+        if args_cli.save_cam:
+            frame_filename = os.path.join(
+                        camera_out_dir, 
+                        f"frame_{frame_count}.png"
+                    )
+            PIL_Image.fromarray(camera_data).save(frame_filename)
+        frame_count += 1
+        ros_node.publish_cam(camera_data,frame_count)
 
         if args_cli.video:
             timestep += 1

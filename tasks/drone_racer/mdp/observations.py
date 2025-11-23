@@ -21,7 +21,6 @@ from utils.logger import log
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
-
 def root_lin_vel_b(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Asset root linear velocity in the body frame."""
     asset: RigidObject = env.scene[asset_cfg.name]
