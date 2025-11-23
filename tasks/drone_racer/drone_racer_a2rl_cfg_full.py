@@ -260,7 +260,7 @@ class DroneRacerEnvCfg_PLAY(ManagerBasedRLEnvCfg):
 
         # Disable IMU and Tiled Camera
         #self.scene.imu = None
-        s#elf.scene.tiled_camera = None
+        #self.scene.tiled_camera = None
 
         # MDP settings
         self.observations.critic = None
