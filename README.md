@@ -12,7 +12,7 @@ Maintained by [Ai Robotics @ Berkeley](https://github.com/airobotics-ucberkeley)
 
 Autonomous drone racing is an active area of research. This project builds on insights from that body of work, combining them with massively parallel simulation to train racing policies within minutes — offering a fast and flexible platform for experimentation and benchmarking.
 
-You can watch the related video here: [https://youtu.be/wLTYtpEUEEk](https://youtu.be/wLTYtpEUEEk)
+(You can watch the origonal related video here: [https://youtu.be/wLTYtpEUEEk](https://youtu.be/wLTYtpEUEEk))
 
 ## Features
 
